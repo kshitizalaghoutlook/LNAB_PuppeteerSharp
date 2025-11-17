@@ -204,7 +204,7 @@ class Program
                     {
                         if (pageContent.Contains(term))
                         {
-                            throw new Exception($"Error found: {term}");
+                            throw new ApplicationException($"Error found: {term}");
                         }
                     }
 
@@ -642,6 +642,7 @@ DELETE FROM dbo.RegisteredApps WHERE Host = @h AND Port = @p AND App = @a;", cn)
             ex is PuppeteerSharp.WaitTaskTimeoutException ||
             ex is PuppeteerSharp.NavigationException ||
             ex is NullReferenceException ||
+            ex is ApplicationException ||
             ex.Message.Contains("Execution context was destroyed", StringComparison.OrdinalIgnoreCase);
 
         private static void HandleKnownError(Exception ex)
@@ -653,6 +654,11 @@ DELETE FROM dbo.RegisteredApps WHERE Host = @h AND Port = @p AND App = @a;", cn)
         }
 
         private static void Log(string msg) => Console.WriteLine($"[{DateTime.Now:T}] {msg}");
+    }
+
+    public class ApplicationException : Exception
+    {
+        public ApplicationException(string message) : base(message) { }
     }
 
 
