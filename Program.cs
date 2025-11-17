@@ -4,6 +4,20 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Hosting;
 using PuppeteerSharp;
+using PuppeteerSharp.Input;
+using SSM = System.ServiceModel;
+using CWCF = CoreWCF;
+using CoreWCF.Configuration;
+            // [ServiceContract], [OperationContract]
+using CoreWCF.Channels;    // NetTcpBinding, EndpointAddress, ICommunicationObject
+      // ChannelFactory<T>
+
+using Microsoft.SqlServer.Server;
+using System.Runtime.Intrinsics.X86;
+using System.ServiceModel;
+using System.Text.RegularExpressions;
+// using CoreWCF.Description; // only if you enable metadata behavior
+
 
 class Program
 {
@@ -14,6 +28,7 @@ class Program
     private static IPage? _page;
     private static string? _conn;
 
+    private static string[] errorTerms = { "TIMEOUT", "due to planned maintenance", "the appres system is temporarily unavailable", "asas id enrollment not found" };
     // Wakes the processing loop immediately when a remote request arrives
     private static readonly SemaphoreSlim _kick = new(0, int.MaxValue);
 
@@ -25,44 +40,521 @@ class Program
     // Listener URL used by external callers to reach this app
     private static string ListenerUrl => $"net.tcp://{host}:{port}/LNAB";
 
-
-
-
-    // Make sure you have: using CoreWCF.NetTcp;
-
-    // Needed at top of file:
-
-
-    private static async Task StartNetTcpHostAsync(int listenPort)
+    static async Task Main()
     {
-        var webHost = new WebHostBuilder()
-            .UseKestrel()
-            .UseNetTcp(listenPort) // ✅ on IWebHostBuilder (correct place)
-            .ConfigureServices(services =>
-            {
-                services.AddServiceModelServices();
-                services.AddServiceModelMetadata();
+        IBrowser? browser = null;
+        IPage? page = null;
 
-                // Register the concrete service, not the interface
-                services.AddSingleton<Service1>();
-            })
-            .Configure(app =>
+        try
+        {
+            // === Puppeteer boot & login (once) ===
+            await new BrowserFetcher().DownloadAsync();
+            browser = await Puppeteer.LaunchAsync(new LaunchOptions
             {
-                app.UseServiceModel(s =>
+                Headless = false,
+                UserDataDir = "./PuppeteerUserData"
+            });
+            _browser = browser;
+
+            page = await browser.NewPageAsync();
+            await page.SetUserAgentAsync("Mozilla/5.0 (Windows NT 10.0; Win32; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari");
+            //await page.GoToAsync(StartUrl);
+
+            var user = "UCDAON";
+            var pass = "K1llB1ll";
+
+            await LoginAsync(page, user, pass, tickRememberCheckbox: true);
+
+            await RegistrySection(page);
+        }
+        catch (Exception ex)
+        {
+            //Console.WriteLine("[FATAL] " + ex);
+            //try { if (connStr != null) await InActivateAsync(connStr); } catch { }
+            //try { if (page is not null && !page.IsClosed) await page.CloseAsync(); } catch { }
+            //try { if (browser is not null) await browser.CloseAsync(); } catch { }
+            //Console.WriteLine("Exiting due to fatal error.");
+            return;
+        }
+        finally
+        {
+            // Cleanup on graceful stop
+            //try { if (connStr != null) await InActivateAsync(connStr); } catch { }
+            //try { if (page is not null && !page.IsClosed) await page.CloseAsync(); } catch { }
+            //try { if (browser is not null) await browser.CloseAsync(); } catch { }
+        }
+    }
+
+    // ====== Login & Navigation ======
+    private static async Task LoginAsync(IPage page, string username, string password, bool tickRememberCheckbox)
+    {
+        await SafeExecutor.RunAsync(async () =>
+        {
+
+            await page.DeleteCookieAsync();
+                await page.SetExtraHttpHeadersAsync(new Dictionary<string, string>
                 {
-                    s.AddService<Service1>();
-
-                    var binding = new CoreWCF.NetTcpBinding(CoreWCF.SecurityMode.None);
-                    var baseAddress = new Uri($"net.tcp://0.0.0.0:{listenPort}/LNQC"); // or /LNAB if that’s your path
-                    s.AddServiceEndpoint<Service1, IService1>(binding, baseAddress);
+                    ["Cache-Control"] = "no-cache",
+                    ["Pragma"] = "no-cache"
                 });
+                // Navigate to the login page
+                await page.GoToAsync("https://appres.alberta.ca/GOA.APPRES.Login/Login_Alberta.aspx", new NavigationOptions { Timeout = 30000 });
 
-                // ❌ REMOVE: app.UseNetTcp(listenPort);
-            })
-            .Build();
+                await page.ClickAsync("#btnLgnUsingMADI");
 
-        Console.WriteLine($"[CoreWCF] Listening at net.tcp://0.0.0.0:{listenPort}/LNQC");
-        await webHost.RunAsync();
+                //// Wait for navigation or a specific element to confirm login success
+                await page.WaitForNavigationAsync();
+
+                
+
+                await page.WaitForSelectorAsync("goa-button", new WaitForSelectorOptions { Visible = true });
+
+                // Get the host <goa-button>
+                var buttonHost = await page.QuerySelectorAsync("goa-button");
+
+                // Check the real <button> inside the shadowRoot
+                var isSignInButtonEnabled = await page.EvaluateFunctionAsync<bool>(@"(host) => {
+    const btn = host.shadowRoot && host.shadowRoot.querySelector('button');
+    if (!btn) return false;
+    return !btn.disabled && btn.offsetParent !== null;
+}", buttonHost);
+                if (isSignInButtonEnabled)
+                {
+
+
+                    var newContentSelector = "goa-form-item"; // Replace with the actual selector of the new content
+                    await page.WaitForSelectorAsync(newContentSelector, new WaitForSelectorOptions { Visible = true, Timeout = 1000 }); // Adjust timeout as needed
+
+
+                    var inputElement = await page.WaitForSelectorAsync("goa-input", new WaitForSelectorOptions { Visible = true, Timeout = 1000 }); // Adjust timeout as needed
+
+                    await inputElement.FocusAsync();
+
+                    //await inputElement.TypeAsync("UCDAON"); // Replace
+                    await page.Keyboard.TypeAsync(username, new TypeOptions { Delay = 100 });
+                    await Task.Delay(1000);
+
+
+                    await page.Keyboard.PressAsync("Enter");
+                    // wait for either error div or password field to appear
+                    await page.WaitForFunctionAsync(@"() => {
+    return document.querySelector('div.error-msg') ||
+           [...document.querySelectorAll('goa-input')]
+             .some(el => el.shadowRoot?.querySelector('input[type=password]'));
+}", new WaitForFunctionOptions { Timeout = 10000 });
+
+
+
+
+                    var button2 = await page.QuerySelectorAsync("goa-button");
+
+
+
+
+
+                    
+
+                    await page.WaitForSelectorAsync(newContentSelector, new WaitForSelectorOptions { Visible = true, Timeout = 30000 }); // Adjust timeout as needed
+                    inputElement = await page.WaitForSelectorAsync("goa-input", new WaitForSelectorOptions { Visible = true, Timeout = 30000 }); // Adjust timeout as needed
+
+                    await inputElement.FocusAsync();
+                    await Task.Delay(1000);
+                   
+                    await page.Keyboard.TypeAsync(password, new TypeOptions { Delay = 100 });
+                    await Task.Delay(1000);
+                    await page.Keyboard.PressAsync("Enter");
+
+                    await page.WaitForNavigationAsync();
+                    await Task.Delay(2000);
+         
+                }
+        });
+
+    }
+
+    private static async Task<IPage> RegistrySection(IPage page)
+    {
+
+        await SafeExecutor.RunAsync(async () =>
+        {
+            // Log("Login Successful");
+
+            await Task.Delay(2000);
+                // Navigate to the Registry Page
+                await page.GoToAsync("https://appres.alberta.ca/GOA.APPRES.Web/InitiateTransaction.aspx?ServiceTypeID=CAA45F61-80A1-4EEE-9ACD-B02B856678BC", new NavigationOptions { Timeout = 30000 });
+                await Task.Delay(3000);
+                // Define the src attribute of the iframe you want to access
+                var frames = page.Frames;
+                // Find the frame by its src attribute
+                var iframeSrc = "https://appres.alberta.ca/GOA.APPRES.Web/InitiateTransaction.aspx?ServiceTypeID=CAA45F61-80A1-4EEE-9ACD-B02B856678BC"; // Replace with the actual src of the iframe
+
+
+
+
+                var targetFrame = frames.FirstOrDefault(frame => frame.Url.Contains(iframeSrc));
+
+                if (targetFrame != null)
+                {
+                    //Check if error occurs
+
+                    // Search for any of the words or sentences inside the iframe
+                    string pageContent = await targetFrame.EvaluateFunctionAsync<string>("() => document.body.innerText");
+                   
+                    foreach (var term in errorTerms)
+                    {
+                        if (pageContent.Contains(term))
+                        {
+                            throw new Exception($"Error found: {term}");
+                        }
+                    }
+
+                    // Console.WriteLine($"Found the frame with src: {iframeSrc}");
+
+                    // Optionally, you can interact with the frame, e.g., by typing in an input field within the iframe
+                    var dropDownSelector = "#SearchRequest_serviceDropDown"; // Replace with the actual selector inside the iframe
+                    await targetFrame.WaitForSelectorAsync(dropDownSelector, new WaitForSelectorOptions { Visible = true });
+
+                    // Select the item by value
+                    var valueToSelect = "fdaf04e0-6828-4f8a-ae76-6f028150ab4d"; // Replace with the actual value you want to select
+                    await page.SelectAsync(dropDownSelector, valueToSelect);
+
+                    Console.WriteLine($"Selected the item with value: {valueToSelect}");
+
+                    // Optionally, you can take further actions like submitting a form or checking the result
+                    var submitButtonSelector = "#SearchRequest_GoButton"; // Replace with the actual selector
+                    await page.ClickAsync(submitButtonSelector);
+
+                    // Optionally wait for navigation or other actions to complete
+                    await page.WaitForNavigationAsync(new NavigationOptions { WaitUntil = new[] { WaitUntilNavigation.Load, WaitUntilNavigation.Networkidle0 } });
+                    await Task.Delay(3000);
+                    // Optionally extract content from the new page
+                    var newPageContent = await page.GetContentAsync();
+
+
+                    //Console.WriteLine(newPageContent);
+                }
+                else
+                {
+                    Console.WriteLine("Iframe not found.");
+                }
+        });
+        return page;
+
+    }
+
+    private static async Task<IPage> Search(IPage page, string vin)
+    {
+        await SafeExecutor.RunAsync(async () =>
+        {
+            // Define the class name to search within
+            var className = "bandlight"; // Replace with the actual class name
+
+            // Construct the CSS selector to find the first input inside the class
+            var selector = $".{className} input";
+
+            // Wait for the first input inside the class to be present and visible
+            await page.WaitForSelectorAsync(selector);
+
+            // Query the first input element inside the class
+            var inputElement = await page.QuerySelectorAsync(selector);
+            await inputElement.FocusAsync();
+
+            await inputElement.TypeAsync(vin);
+
+
+            // Define the value of the button you want to click
+            var buttonName = "Search"; // Replace with the actual value of the button
+
+            // Construct the CSS selector to find the input by its value attribute
+            selector = $"input[name='{buttonName}']";
+
+            // Wait for the button to be present and visible
+            await page.WaitForSelectorAsync(selector);
+
+            // Query the button by its value and click it
+            var buttonElement = await page.QuerySelectorAsync(selector);
+
+
+            // Click the button
+            await buttonElement.ClickAsync();
+
+            await page.WaitForNavigationAsync();
+            await Task.Delay(3000);
+        });
+        return (page);
+    }
+
+    private static async Task<IPage> ContinueSearch(IPage page)
+    {
+        await SafeExecutor.RunAsync(async () =>
+        {
+
+            // Define the value of the button you want to click
+            var buttonName = "Continue"; // Replace with the actual value of the button
+
+                // Construct the CSS selector to find the input by its value attribute
+                var selector = $"input[value='{buttonName}']";
+
+                // Wait for the button to be present and visible
+                await page.WaitForSelectorAsync(selector);
+
+                // Query the button by its value and click it
+                var buttonElement = await page.QuerySelectorAsync(selector);
+
+
+                // Click the button
+                await buttonElement.ClickAsync();
+
+                await page.WaitForNavigationAsync();
+                await Task.Delay(3000);
+            
+     });
+        return (page);
+
+    }
+
+    private static async Task<IPage> DistributeSearch(IPage page, string currentReqID, string vin)
+    {
+
+        await SafeExecutor.RunAsync(async () =>
+        {
+            int noOfLiens = 0;
+
+                // Define the id of the checkbox element
+                var checkboxId = "chkSpecificSerialNumberOnly"; // Replace with the actual id of the checkbox
+                await page.WaitForSelectorAsync("#CriteriaPanelHolder input", new WaitForSelectorOptions { Timeout = 10000 });
+                var tempVin = await page.EvaluateFunctionAsync<string>(
+                    @"() => {
+        const el = document.querySelector('#CriteriaPanelHolder input');
+        return el ? el.value ?? el.getAttribute('value') ?? null : null;
+    }");
+
+                if (!string.Equals(vin, tempVin, StringComparison.OrdinalIgnoreCase))
+                {
+                    //Log($"VIN mismatch: expected '{tempVin}', got '{vin}'. Restarting app...");
+
+                   await RestartAsync();
+                }
+                // Construct the CSS selector to find the checkbox by its id
+                var selector = $"#{checkboxId}";
+
+
+                // Wait for the checkbox to be present and visible
+                await page.WaitForSelectorAsync(selector, new WaitForSelectorOptions { Visible = true });
+
+
+                // Click the checkbox
+                await page.ClickAsync(selector);
+
+                // Define the id of the checkbox element
+                var resultsId = "ResultGeneral"; // Replace with the actual id of the checkbox
+
+                // Construct the CSS selector to find the checkbox by its id
+                selector = $"#{resultsId}";
+
+                // Wait for the checkbox to be present and visible
+                await page.WaitForSelectorAsync(selector, new WaitForSelectorOptions { Visible = true });
+
+
+                // Extract the text inside the <strong> tag within the <span> with id 'ResultGeneral'
+                var strongText = await page.EvaluateFunctionAsync<string>(@"() => {
+            const span = document.querySelector('#ResultGeneral');
+            if (span) {
+                const strongTag = span.querySelector('strong');
+                return strongTag ? strongTag.textContent : null;
+            }
+            return null;
+        }");
+
+
+                // Display the extracted text
+                if (strongText.Contains("Both") || strongText.Contains("Exact"))
+                {
+                    strongText = await page.EvaluateFunctionAsync<string>(@"() => {
+            const span = document.querySelector('#ResultExact');
+            if (span) {
+                const strongTag = span.querySelector('strong');
+                return strongTag ? strongTag.textContent : null;
+            }
+            return null;
+        }");
+                    // Regular expression to match text between two circular brackets
+                    string pattern = @"\(([^)]+)\)";
+                    Match match = Regex.Match(strongText, pattern);
+
+                    if (match.Success)
+                    {
+                        string result = match.Groups[1].Value;
+                        noOfLiens = Convert.ToInt32(result);
+                        Console.WriteLine($"Text inside brackets: {result}");
+                    }
+                    else
+                    {
+                        Console.WriteLine("No text found inside brackets.");
+                    }
+
+                }
+                else if (strongText.Contains("Inexact"))
+                {
+                    noOfLiens = 0;
+                }
+                SQLSetCompleted(currentReqID, noOfLiens);
+
+                // Construct the CSS selector to find the input by its value attribute
+                var buttonName = "Distribute";
+
+
+                selector = $"input[name='{buttonName}']";
+
+                // Wait for the button to be present and visible
+                await page.WaitForSelectorAsync(selector);
+
+                // Query the button by its value and click it
+                var buttonElement = await page.QuerySelectorAsync(selector);
+
+
+                // Click the button
+                await buttonElement.ClickAsync();
+
+                await page.WaitForNavigationAsync();
+                await Task.Delay(3000);
+    });
+        return (page);
+    }
+
+    private async Task<IPage> DistributeToEmail(IPage page, string email, string RId)
+    {
+        // Optionally extract content from the new page
+
+        await SafeExecutor.RunAsync(async () =>
+        {
+
+            var buttonName = "ctrlPDD:PDDAddNew";
+
+
+            var selector = $"input[name='{buttonName}']";
+
+            // Wait for the button to be present and visible
+            await page.WaitForSelectorAsync(selector);
+
+            // Query the button by its value and click it
+            var buttonElement = await page.QuerySelectorAsync(selector);
+
+
+            // Click the button
+            await buttonElement.ClickAsync();
+
+            await page.WaitForNavigationAsync();
+            // Define the selector for the dropdown (select) element
+            var dropdownSelector = "#ctrlPDD_DDLControl"; // Replace with the actual selector for your dropdown
+
+
+
+            // Wait for the dropdown to be present in the DOM
+            await page.WaitForSelectorAsync(dropdownSelector);
+
+            // Select the value from the dropdown
+            var valueToSelect = "Email"; // Replace with the actual value attribute of the option you want to select
+            await page.SelectAsync(dropdownSelector, valueToSelect);
+
+            await page.WaitForNavigationAsync();
+
+            var inputName = "ctrlPDD:_txtEmailTo"; // Replace with the actual class name
+
+            // Construct the CSS selector to find the first input inside the class
+            selector = $"input[name='{inputName}']";
+
+            // Wait for the first input inside the class to be present and visible
+            await page.WaitForSelectorAsync(selector);
+
+            // Query the first input element inside the class
+            var inputElement = await page.QuerySelectorAsync(selector);
+            await inputElement.FocusAsync();
+
+            await inputElement.TypeAsync(email);
+
+            // Wait for the dropdown to be present in the DOM
+            await page.WaitForSelectorAsync(dropdownSelector);
+
+            inputName = "ctrlPDD:_txtEmailSubject"; // Replace with the actual class name
+
+            // Construct the CSS selector to find the first input inside the class
+            selector = $"input[name='{inputName}']";
+
+            // Wait for the first input inside the class to be present and visible
+            await page.WaitForSelectorAsync(selector);
+
+            // Query the first input element inside the class
+            inputElement = await page.QuerySelectorAsync(selector);
+            await inputElement.FocusAsync();
+
+            await inputElement.TypeAsync(RId);
+
+            // Query the button by its value and click it
+            // buttonElement = await page.QuerySelectorAsync(selector);
+
+
+            //// Click the button
+            //await buttonElement.ClickAsync();
+
+            //await page.WaitForNavigationAsync();
+            //await Task.Delay(3000);
+            buttonName = "ctrlPDD_btnSavePPD";
+
+
+            selector = $"input[id='{buttonName}']";
+
+            // Wait for the button to be present and visible
+            await page.WaitForSelectorAsync(selector);
+
+            // Query the button by its value and click it
+            buttonElement = await page.QuerySelectorAsync(selector);
+
+
+            // Click the button
+            await buttonElement.ClickAsync();
+
+            await page.WaitForNavigationAsync();
+
+            // Define the value of the button you want to click
+            buttonName = "Continue"; // Replace with the actual value of the button
+
+            // Construct the CSS selector to find the input by its value attribute
+            selector = $"input[value='{buttonName}']";
+
+            // Wait for the button to be present and visible
+            await page.WaitForSelectorAsync(selector);
+
+            // Query the button by its value and click it
+            buttonElement = await page.QuerySelectorAsync(selector);
+
+
+            // Click the button
+            await buttonElement.ClickAsync();
+
+            await page.WaitForNavigationAsync();
+            await Task.Delay(3000);
+
+            var newPageContent = await page.GetContentAsync();
+
+        });
+        return page;
+    }
+
+    private static (SSM.ChannelFactory<IService1Client> factory, IService1Client proxy) CreateClient(string url)
+    {
+        var binding = new SSM.NetTcpBinding(SSM.SecurityMode.None);
+        var address = new SSM.EndpointAddress(url);
+        var factory = new SSM.ChannelFactory<IService1Client>(binding, address);
+        var proxy = factory.CreateChannel();
+        return (factory, proxy);
+    }
+
+
+    private static void CloseClientSafe(SSM.ChannelFactory<IService1Client>? factory, IService1Client? proxy)
+    {
+        try { (proxy as SSM.IClientChannel)?.Close(); } catch { (proxy as SSM.IClientChannel)?.Abort(); }
+        try { factory?.Close(); } catch { factory?.Abort(); }
     }
 
     private static async Task RestartAsync()
@@ -126,4 +618,170 @@ DELETE FROM dbo.RegisteredApps WHERE Host = @h AND Port = @p AND App = @a;", cn)
             Console.WriteLine($"[INACTIVATE-ERROR] {ex.Message}");
         }
     }
+
+    public static class SafeExecutor
+    {
+        public static async Task RunAsync(Func<Task> action)
+        {
+            try
+            {
+                await action();
+            }
+            catch (Exception ex) when (IsKnownPuppeteerError(ex))
+            {
+                HandleKnownError(ex);
+            }
+            catch (Exception ex)
+            {
+                Log($"Unhandled: {ex.Message}");
+            }
+        }
+
+        private static bool IsKnownPuppeteerError(Exception ex) =>
+            ex is TimeoutException ||
+            ex is PuppeteerSharp.WaitTaskTimeoutException ||
+            ex is PuppeteerSharp.NavigationException ||
+            ex is NullReferenceException ||
+            ex.Message.Contains("Execution context was destroyed", StringComparison.OrdinalIgnoreCase);
+
+        private static void HandleKnownError(Exception ex)
+        {
+            Log($"Handled Puppeteer error: {ex.Message}");
+            //InActivate();
+            //CloseServiceHost();
+            //start();
+        }
+
+        private static void Log(string msg) => Console.WriteLine($"[{DateTime.Now:T}] {msg}");
+    }
+
+
+    // ====== DB methods ======
+
+    private static void SQLSetCompleted(string currentReqID, int noOfLiens)
+    {
+        
+            SqlConnection sqlConnection = new SqlConnection(_conn);
+            DateTime now = DateTime.Now;
+            string str = string.Format("Update OOPRequests Set EndTime='{0}', SubmittedTimes= {1} Where  RequestID = {2} and Province = 'AB'", now, noOfLiens, currentReqID);
+            sqlConnection.Open();
+            (new SqlCommand(str, sqlConnection)).ExecuteNonQuery();
+            sqlConnection.Close();
+      
+        
+    }
+
+
+    private static void MarkAvailable()
+    {
+        try
+        {
+            
+            using var connection = new SqlConnection(_conn);
+            using var command = new SqlCommand(
+                "UPDATE dbo.RegisteredApps SET StartTime = NULL WHERE Host = @Host AND Port = @Port AND App = @App",
+                connection);
+
+            command.Parameters.AddWithValue("@Host", host);
+            command.Parameters.AddWithValue("@Port", port);
+            command.Parameters.AddWithValue("@App", app);
+
+            connection.Open();
+            command.ExecuteNonQuery();
+        }
+        catch (Exception ex)
+        {
+           
+        }
+    }
+    private static void MarkBusy()
+    {
+        try
+        {
+
+            using var connection = new SqlConnection(_conn);
+            using var command = new SqlCommand(
+                "UPDATE dbo.RegisteredApps SET StartTime = @StartTime WHERE Host = @Host AND Port = @Port AND App = @App",
+                connection);
+
+            command.Parameters.AddWithValue("@StartTime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+            command.Parameters.AddWithValue("@Host", host);
+            command.Parameters.AddWithValue("@Port", port);
+            command.Parameters.AddWithValue("@App", app);
+
+            connection.Open();
+            command.ExecuteNonQuery();
+        }
+        catch (Exception ex)
+        {
+
+        }
+    }
+
+    private string ReportUnCompletedSearches()
+    {
+        try
+        {
+            const string query = @"
+            SELECT TOP 1 A.RequestID, B.VIN
+            FROM OOPRequests A
+            INNER JOIN Requests B ON A.RequestID = B.RequestID
+            WHERE A.Completed = 0 
+              AND A.DroneName IS NULL 
+              AND Province = 'AB'";
+
+            using var connection = new SqlConnection(_conn);
+            using var command = new SqlCommand(query, connection);
+
+            connection.Open();
+            using var reader = command.ExecuteReader();
+
+            if (reader.Read())
+            {
+                string requestId = reader["RequestID"].ToString()?.Trim() ?? "";
+                string vin = reader["VIN"].ToString()?.Trim() ?? "";
+                return $"{requestId}_{vin}";
+            }
+        }
+        catch (Exception ex)
+        {
+      
+        }
+
+        return string.Empty;
+    }
+
+    private string ReportCompletedSearchesNotDistributed()
+    {
+        try
+        {
+            const string query = @"
+            SELECT TOP 1 A.RequestID, B.VIN
+            FROM OOPRequests A
+            INNER JOIN Requests B ON A.RequestID = B.RequestID
+            WHERE A.Completed = 1
+              AND A.DroneName IS NOT NULL
+              AND Province = 'AB'";
+
+            using var connection = new SqlConnection(_conn);
+            using var command = new SqlCommand(query, connection);
+
+            connection.Open();
+            using var reader = command.ExecuteReader();
+
+            if (reader.Read())
+            {
+                string requestId = reader["RequestID"].ToString()?.Trim() ?? "";
+                string vin = reader["VIN"].ToString()?.Trim() ?? "";
+                return $"{requestId}_{vin}";
+            }
+        }
+        catch (Exception ex)
+        {
+           
+        }
+
+        return string.Empty;
+    }
+
 }

@@ -8,7 +8,7 @@ public sealed class Service1 : IService1
     }
 
     public void reStart()
-    { 
+    {
         Program.RestartApp();
     }
 }
