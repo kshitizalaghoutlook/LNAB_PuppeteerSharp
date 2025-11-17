@@ -28,7 +28,7 @@ class Program
     private static IPage? _page;
     private static string? _conn;
 
-    private static string[] errorTerms = { "TIMEOUT", "due to planned maintenance", "the appres system is temporarily unavailable", "asas id enrollment not found" };
+    private static string[] errorTerms = { "timeout", "due to planned maintenance", "the appres system is temporarily unavailable", "asas id enrollment not found" };
     // Wakes the processing loop immediately when a remote request arrives
     private static readonly SemaphoreSlim _kick = new(0, int.MaxValue);
 
@@ -166,10 +166,35 @@ class Program
 
                     await page.WaitForNavigationAsync();
                     await Task.Delay(2000);
+                    await CheckForApplicationErrorsAsync(page);
          
                 }
         });
 
+    }
+
+    private static async Task CheckForApplicationErrorsAsync(IPage page)
+    {
+        string pageContent = await page.EvaluateFunctionAsync<string>("() => document.body.innerText");
+        foreach (var term in errorTerms)
+        {
+            if (pageContent.ToLower().Contains(term))
+            {
+                throw new ApplicationException($"Error found: {term}");
+            }
+        }
+    }
+
+    private static async Task CheckForApplicationErrorsAsync(IFrame frame)
+    {
+        string pageContent = await frame.EvaluateFunctionAsync<string>("() => document.body.innerText");
+        foreach (var term in errorTerms)
+        {
+            if (pageContent.ToLower().Contains(term))
+            {
+                throw new ApplicationException($"Error found: {term}");
+            }
+        }
     }
 
     private static async Task<IPage> RegistrySection(IPage page)
@@ -195,18 +220,7 @@ class Program
 
                 if (targetFrame != null)
                 {
-                    //Check if error occurs
-
-                    // Search for any of the words or sentences inside the iframe
-                    string pageContent = await targetFrame.EvaluateFunctionAsync<string>("() => document.body.innerText");
-                   
-                    foreach (var term in errorTerms)
-                    {
-                        if (pageContent.Contains(term))
-                        {
-                            throw new Exception($"Error found: {term}");
-                        }
-                    }
+                    await CheckForApplicationErrorsAsync(targetFrame);
 
                     // Console.WriteLine($"Found the frame with src: {iframeSrc}");
 
@@ -229,6 +243,7 @@ class Program
                     await Task.Delay(3000);
                     // Optionally extract content from the new page
                     var newPageContent = await page.GetContentAsync();
+                    await CheckForApplicationErrorsAsync(page);
 
 
                     //Console.WriteLine(newPageContent);
@@ -280,6 +295,7 @@ class Program
 
             await page.WaitForNavigationAsync();
             await Task.Delay(3000);
+            await CheckForApplicationErrorsAsync(page);
         });
         return (page);
     }
@@ -307,6 +323,7 @@ class Program
 
                 await page.WaitForNavigationAsync();
                 await Task.Delay(3000);
+                await CheckForApplicationErrorsAsync(page);
             
      });
         return (page);
@@ -418,6 +435,7 @@ class Program
 
                 await page.WaitForNavigationAsync();
                 await Task.Delay(3000);
+                await CheckForApplicationErrorsAsync(page);
     });
         return (page);
     }
@@ -445,6 +463,7 @@ class Program
             await buttonElement.ClickAsync();
 
             await page.WaitForNavigationAsync();
+            await CheckForApplicationErrorsAsync(page);
             // Define the selector for the dropdown (select) element
             var dropdownSelector = "#ctrlPDD_DDLControl"; // Replace with the actual selector for your dropdown
 
@@ -458,6 +477,7 @@ class Program
             await page.SelectAsync(dropdownSelector, valueToSelect);
 
             await page.WaitForNavigationAsync();
+            await CheckForApplicationErrorsAsync(page);
 
             var inputName = "ctrlPDD:_txtEmailTo"; // Replace with the actual class name
 
@@ -515,6 +535,7 @@ class Program
             await buttonElement.ClickAsync();
 
             await page.WaitForNavigationAsync();
+            await CheckForApplicationErrorsAsync(page);
 
             // Define the value of the button you want to click
             buttonName = "Continue"; // Replace with the actual value of the button
@@ -536,6 +557,7 @@ class Program
             await Task.Delay(3000);
 
             var newPageContent = await page.GetContentAsync();
+            await CheckForApplicationErrorsAsync(page);
 
         });
         return page;
@@ -642,17 +664,28 @@ DELETE FROM dbo.RegisteredApps WHERE Host = @h AND Port = @p AND App = @a;", cn)
             ex is PuppeteerSharp.WaitTaskTimeoutException ||
             ex is PuppeteerSharp.NavigationException ||
             ex is NullReferenceException ||
+            ex is ApplicationException ||
             ex.Message.Contains("Execution context was destroyed", StringComparison.OrdinalIgnoreCase);
 
         private static void HandleKnownError(Exception ex)
         {
             Log($"Handled Puppeteer error: {ex.Message}");
+            if (ex is ApplicationException)
+            {
+                _ = RestartAsync();
+                return;
+            }
             //InActivate();
             //CloseServiceHost();
             //start();
         }
 
         private static void Log(string msg) => Console.WriteLine($"[{DateTime.Now:T}] {msg}");
+    }
+
+    public class ApplicationException : Exception
+    {
+        public ApplicationException(string message) : base(message) { }
     }
 
 
