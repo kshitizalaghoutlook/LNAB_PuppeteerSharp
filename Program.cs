@@ -47,11 +47,11 @@ class Program
 
     static async Task Main()
     {
-        FileLogger.Log("Application starting.");
         _conn = ConfigurationManager.ConnectionStrings["_conn"].ConnectionString;
         // Fire on abnormal exits
-        AppDomain.CurrentDomain.UnhandledException += (_, __) =>
+        AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
         {
+            ErrorLogger.Log(e.ExceptionObject as Exception, "AppDomain.UnhandledException");
             try { InActivateAsync(_conn).GetAwaiter().GetResult(); } catch { /* swallow on shutdown */ }
         };
         AppDomain.CurrentDomain.ProcessExit += (_, __) =>
@@ -65,13 +65,9 @@ class Program
             try { InActivateAsync(_conn).GetAwaiter().GetResult(); } catch { }
             Environment.Exit(0);
         };
-        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        TaskScheduler.UnobservedTaskException += (sender, e) =>
         {
-            FileLogger.Log("[FATAL][AppDomain] " + e.ExceptionObject);
-        };
-        TaskScheduler.UnobservedTaskException += (_, e) =>
-        {
-            FileLogger.Log("[FATAL][UnobservedTask] " + e.Exception);
+            ErrorLogger.Log(e.Exception, "TaskScheduler.UnobservedTaskException");
             e.SetObserved();
         };
 
@@ -89,40 +85,54 @@ class Program
         _page = await _browser.NewPageAsync();
         await _page.SetUserAgentAsync("Mozilla/5.0 (Windows NT 10.0; Win32; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari");
 
-        // Process any pending requests on startup
-        string pendingRequest;
-        while (!string.IsNullOrEmpty(pendingRequest = ReportCompletedSearchesNotDistributed()))
-        {
-            MarkBusy();
-            await ProcessRequest(pendingRequest, true);
-            MarkAvailable();
-        }
-        while (!string.IsNullOrEmpty(pendingRequest = ReportUnCompletedSearches()))
-        {
-            MarkBusy();
-            await ProcessRequest(pendingRequest, false);
-            MarkAvailable();
-        }
-
+        // Main processing loop with error handling
         while (true)
         {
-            await _kick.WaitAsync(); // Wait for a signal that a new request has arrived
-
-            var prevSearch = ReportCompletedSearchesNotDistributed();
-            if (!string.IsNullOrEmpty(prevSearch))
+            try
             {
-                MarkBusy();
-                await ProcessRequest(prevSearch, true);
-                MarkAvailable();
-                continue;
+                // Process any pending requests on startup
+                string pendingRequest;
+                while (!string.IsNullOrEmpty(pendingRequest = ReportCompletedSearchesNotDistributed()))
+                {
+                    MarkBusy();
+                    await ProcessRequest(pendingRequest, true);
+                    MarkAvailable();
+                }
+                while (!string.IsNullOrEmpty(pendingRequest = ReportUnCompletedSearches()))
+                {
+                    MarkBusy();
+                    await ProcessRequest(pendingRequest, false);
+                    MarkAvailable();
+                }
+
+                // Wait for new requests
+                while (true)
+                {
+                    await _kick.WaitAsync(); // Wait for a signal that a new request has arrived
+
+                    var prevSearch = ReportCompletedSearchesNotDistributed();
+                    if (!string.IsNullOrEmpty(prevSearch))
+                    {
+                        MarkBusy();
+                        await ProcessRequest(prevSearch, true);
+                        MarkAvailable();
+                        continue;
+                    }
+
+                    var newRequest = ReportUnCompletedSearches();
+                    if (!string.IsNullOrEmpty(newRequest))
+                    {
+                        MarkBusy();
+                        await ProcessRequest(newRequest, false);
+                        MarkAvailable();
+                    }
+                }
             }
-
-            var newRequest = ReportUnCompletedSearches();
-            if (!string.IsNullOrEmpty(newRequest))
+            catch (Exception ex)
             {
-                MarkBusy();
-                await ProcessRequest(newRequest, false);
-                MarkAvailable();
+                ErrorLogger.Log(ex, "MainProcessingLoop");
+                await RestartAsync();
+                return; // Exit the current process after initiating a restart
             }
         }
     }
@@ -132,7 +142,7 @@ class Program
     {
         await SafeExecutor.RunAsync(async () =>
         {
-            FileLogger.Log("Attempting to log in.");
+
             await page.DeleteCookieAsync();
             await page.SetExtraHttpHeadersAsync(new Dictionary<string, string>
             {
@@ -209,7 +219,7 @@ class Program
                 await page.WaitForNavigationAsync();
                 await Task.Delay(2000);
                 await CheckForApplicationErrorsAsync(page);
-                FileLogger.Log("Login successful.");
+
             }
         });
 
@@ -244,7 +254,6 @@ class Program
 
         await SafeExecutor.RunAsync(async () =>
         {
-            FileLogger.Log("Navigating to Registry Section.");
             // Log("Login Successful");
 
             await Task.Delay(2000);
@@ -265,17 +274,17 @@ class Program
             {
                 await CheckForApplicationErrorsAsync(targetFrame);
 
-                // FileLogger.Log($"Found the frame with src: {iframeSrc}");
+                // Console.WriteLine($"Found the frame with src: {iframeSrc}");
 
                 // Optionally, you can interact with the frame, e.g., by typing in an input field within the iframe
                 var dropDownSelector = "#SearchRequest_serviceDropDown"; // Replace with the actual selector inside the iframe
                 await targetFrame.WaitForSelectorAsync(dropDownSelector, new WaitForSelectorOptions { Visible = true });
 
                 // Select the item by value
-                var valueToSelect = "fdaf04e-6828-4f8a-ae76-6f028150ab4d"; // Replace with the actual value you want to select
+                var valueToSelect = "fdaf04e0-6828-4f8a-ae76-6f028150ab4d"; // Replace with the actual value you want to select
                 await page.SelectAsync(dropDownSelector, valueToSelect);
 
-                FileLogger.Log($"Selected the item with value: {valueToSelect}");
+                Console.WriteLine($"Selected the item with value: {valueToSelect}");
 
                 // Optionally, you can take further actions like submitting a form or checking the result
                 var submitButtonSelector = "#SearchRequest_GoButton"; // Replace with the actual selector
@@ -287,13 +296,13 @@ class Program
                 // Optionally extract content from the new page
                 var newPageContent = await page.GetContentAsync();
                 await CheckForApplicationErrorsAsync(page);
-                FileLogger.Log("Registry Section navigation successful.");
 
-                //FileLogger.Log(newPageContent);
+
+                //Console.WriteLine(newPageContent);
             }
             else
             {
-                FileLogger.Log("Iframe not found.");
+                Console.WriteLine("Iframe not found.");
             }
         });
         return page;
@@ -304,7 +313,6 @@ class Program
     {
         await SafeExecutor.RunAsync(async () =>
         {
-            FileLogger.Log($"Performing search for VIN: {vin}");
             // Define the class name to search within
             var className = "bandlight"; // Replace with the actual class name
 
@@ -340,7 +348,6 @@ class Program
             await page.WaitForNavigationAsync();
             await Task.Delay(3000);
             await CheckForApplicationErrorsAsync(page);
-            FileLogger.Log("Search successful.");
         });
         return (page);
     }
@@ -349,7 +356,7 @@ class Program
     {
         await SafeExecutor.RunAsync(async () =>
         {
-            FileLogger.Log("Continuing search.");
+
             // Define the value of the button you want to click
             var buttonName = "Continue"; // Replace with the actual value of the button
 
@@ -369,7 +376,7 @@ class Program
             await page.WaitForNavigationAsync();
             await Task.Delay(3000);
             await CheckForApplicationErrorsAsync(page);
-            FileLogger.Log("Continue search successful.");
+
         });
         return (page);
 
@@ -380,7 +387,6 @@ class Program
 
         await SafeExecutor.RunAsync(async () =>
         {
-            FileLogger.Log("Distributing search results.");
             int noOfLiens = 0;
 
             // Define the id of the checkbox element
@@ -449,11 +455,11 @@ class Program
                 {
                     string result = match.Groups[1].Value;
                     noOfLiens = Convert.ToInt32(result);
-                    FileLogger.Log($"Text inside brackets: {result}");
+                    Console.WriteLine($"Text inside brackets: {result}");
                 }
                 else
                 {
-                    FileLogger.Log("No text found inside brackets.");
+                    Console.WriteLine("No text found inside brackets.");
                 }
 
             }
@@ -482,7 +488,6 @@ class Program
             await page.WaitForNavigationAsync();
             await Task.Delay(3000);
             await CheckForApplicationErrorsAsync(page);
-            FileLogger.Log("Search distribution successful.");
         });
         return (page);
     }
@@ -493,7 +498,7 @@ class Program
 
         await SafeExecutor.RunAsync(async () =>
         {
-            FileLogger.Log($"Distributing search results to email: {email}");
+
             var buttonName = "ctrlPDD:PDDAddNew";
 
 
@@ -605,7 +610,7 @@ class Program
 
             var newPageContent = await page.GetContentAsync();
             await CheckForApplicationErrorsAsync(page);
-            FileLogger.Log("Email distribution successful.");
+
         });
         return page;
     }
@@ -614,7 +619,6 @@ class Program
     {
         await SafeExecutor.RunAsync(async () =>
         {
-            FileLogger.Log($"Checking for previous searches for VIN: {vin}");
             bool result = false;
             await Task.Delay(2000);
             // Navigate to the Registry Page
@@ -630,7 +634,7 @@ class Program
 
             if (targetFrame != null)
             {
-                //FileLogger.Log($"Found the frame with src: {iframeSrc}");
+                //Console.WriteLine($"Found the frame with src: {iframeSrc}");
 
                 // Optionally, you can take further actions like submitting a form or checking the result
                 var submitButtonSelector = "#WcBrowsePerformedSearches_goButton"; // Replace with the actual selector
@@ -668,7 +672,7 @@ class Program
                             if (button != null)
                             {
                                 await button.ClickAsync();
-                                FileLogger.Log("Distribution Button clicked successfully.");
+                                Console.WriteLine("Distribution Button clicked successfully.");
                                 result = true;
                                 _newRequest = false;
                                 //break; // Exit the loop after clicking the button
@@ -680,17 +684,17 @@ class Program
 
                 if (result)
                 {
-                    FileLogger.Log("Match found!");
+                    Console.WriteLine("Match found!");
                 }
                 else
                 {
-                    FileLogger.Log("No match found in previous searches.");
+                    Console.WriteLine("No match found in previous searches.");
                     _newRequest = true;
                 }
             }
             else
             {
-                FileLogger.Log("Iframe not found.");
+                Console.WriteLine("Iframe not found.");
             }
         });
 
@@ -701,13 +705,13 @@ class Program
     {
         await SafeExecutor.RunAsync(async () =>
         {
-            FileLogger.Log($"Processing request {newRequest}. Previous search: {prevSearch}");
             string email = ConfigurationManager.AppSettings["Email"];
             _vin = newRequest.Substring(newRequest.IndexOf("_") + 1);
             _currentReqID = newRequest.Substring(0, newRequest.IndexOf("_"));
 
             if (!_loggedIn)
             {
+                // TODO: Move these credentials to a secure storage like Azure Key Vault or Windows Credential Manager
                 await LoginAsync(_page, "UCDAON", "K1llB1ll", true);
                 _loggedIn = true;
             }
@@ -776,13 +780,13 @@ class Program
             })
             .Build();
 
-        FileLogger.Log($"[CoreWCF] Listening at net.tcp://0.0.0.0:{listenPort}/LNAB");
+        Console.WriteLine($"[CoreWCF] Listening at net.tcp://0.0.0.0:{listenPort}/LNAB");
         await webHost.RunAsync();
     }
 
     private static async Task RestartAsync()
     {
-        FileLogger.Log("[RESTART] Closing browser and relaunching…");
+        Console.WriteLine("[RESTART] Closing browser and relaunching…");
         try { if (_page is not null && !_page.IsClosed) await _page.CloseAsync(); } catch { }
         try { if (_browser is not null) await _browser.CloseAsync(); } catch { }
         try { if (!string.IsNullOrEmpty(_conn)) await InActivateAsync(_conn!); } catch { }
@@ -813,11 +817,11 @@ IF NOT EXISTS (SELECT 1 FROM dbo.RegisteredApps WHERE Host = @h AND Port = @p AN
             cmd.Parameters.AddWithValue("@p", port);
             cmd.Parameters.AddWithValue("@a", app);
             await cmd.ExecuteNonQueryAsync();
-            FileLogger.Log($"[ACTIVATE] Registered {host}:{port}/{app}");
+            Console.WriteLine($"[ACTIVATE] Registered {host}:{port}/{app}");
         }
         catch (Exception ex)
         {
-            FileLogger.Log($"[ACTIVATE-ERROR] {ex.Message}");
+            Console.WriteLine($"[ACTIVATE-ERROR] {ex.Message}");
             throw;
         }
     }
@@ -834,11 +838,11 @@ DELETE FROM dbo.RegisteredApps WHERE Host = @h AND Port = @p AND App = @a;", cn)
             cmd.Parameters.AddWithValue("@p", port);
             cmd.Parameters.AddWithValue("@a", app);
             await cmd.ExecuteNonQueryAsync();
-            FileLogger.Log($"[INACTIVATE] Deregistered {host}:{port}/{app}");
+            Console.WriteLine($"[INACTIVATE] Deregistered {host}:{port}/{app}");
         }
         catch (Exception ex)
         {
-            FileLogger.Log($"[INACTIVATE-ERROR] {ex.Message}");
+            Console.WriteLine($"[INACTIVATE-ERROR] {ex.Message}");
         }
     }
 
@@ -850,31 +854,13 @@ DELETE FROM dbo.RegisteredApps WHERE Host = @h AND Port = @p AND App = @a;", cn)
             {
                 await action();
             }
-            catch (Exception ex) when (IsKnownPuppeteerError(ex))
+            catch (Exception)
             {
-                HandleKnownError(ex);
-            }
-            catch (Exception ex)
-            {
-                Log($"Unhandled: {ex.Message}");
+                // Errors are now logged by the top-level handler in Main.
+                // We just need to re-throw the exception to ensure the restart is triggered.
+                throw;
             }
         }
-
-        private static bool IsKnownPuppeteerError(Exception ex) =>
-            ex is TimeoutException ||
-            ex is PuppeteerSharp.WaitTaskTimeoutException ||
-            ex is PuppeteerSharp.NavigationException ||
-            ex is NullReferenceException ||
-            ex is ApplicationException ||
-            ex.Message.Contains("Execution context was destroyed", StringComparison.OrdinalIgnoreCase);
-
-        private static void HandleKnownError(Exception ex)
-        {
-            Log($"Handled Puppeteer error: {ex.Message}");
-            _ = RestartAsync();
-        }
-
-        private static void Log(string msg) => FileLogger.Log($"[{DateTime.Now:T}] {msg}");
     }
 
     public class ApplicationException : Exception
