@@ -75,15 +75,34 @@ class Program
         _ = StartNetTcpHostAsync(port);
         await ActivateAsync(_conn);
 
+        //_browser = await Puppeteer.LaunchAsync(new LaunchOptions
+        //{
+        //    Headless = false,
+        //    Args = new[] { "--incognito" },
+        //    UserDataDir = "./PuppeteerUserData"
+        //});
+
+        //_page = await _browser.NewPageAsync();
+        //await _page.SetUserAgentAsync("Mozilla/5.0 (Windows NT 10.0; Win32; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari");
+
         await new BrowserFetcher().DownloadAsync();
+
         _browser = await Puppeteer.LaunchAsync(new LaunchOptions
         {
             Headless = false,
-            UserDataDir = "./PuppeteerUserData"
+            Args = new[] { "--incognito" }   // whole browser runs in incognito
+                                             // ⚠️ No UserDataDir here – incognito should not use a persistent profile
         });
 
-        _page = await _browser.NewPageAsync();
-        await _page.SetUserAgentAsync("Mozilla/5.0 (Windows NT 10.0; Win32; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari");
+        // Chrome usually opens one blank tab already – reuse it if present
+        var pages = await _browser.PagesAsync();
+        _page = pages.Length > 0 ? pages[0] : await _browser.NewPageAsync();
+
+        // Set UA on that incognito tab
+        await _page.SetUserAgentAsync(
+            "Mozilla/5.0 (Windows NT 10.0; Win32; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari"
+        );
+       //  _page = await _browser.NewPageAsync();
 
         // Main processing loop with error handling
         while (true)
