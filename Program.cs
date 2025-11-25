@@ -71,9 +71,11 @@ class Program
             e.SetObserved();
         };
 
-        // Start the CoreWCF net.tcp listener (make sure StartNetTcpHostAsync is wired correctly)
+        var scheduleManager = new ScheduleManager(_conn);
+        bool isAppActive = false; // To track the current state
+
+        // Start the CoreWCF net.tcp listener
         _ = StartNetTcpHostAsync(port);
-        await ActivateAsync(_conn);
 
         await new BrowserFetcher().DownloadAsync();
         _browser = await Puppeteer.LaunchAsync(new LaunchOptions
@@ -85,30 +87,57 @@ class Program
         _page = await _browser.NewPageAsync();
         await _page.SetUserAgentAsync("Mozilla/5.0 (Windows NT 10.0; Win32; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari");
 
-        // Main processing loop with error handling
+        // Main scheduling and processing loop
         while (true)
         {
             try
             {
-                // Process any pending requests on startup
-                string pendingRequest;
-                while (!string.IsNullOrEmpty(pendingRequest = ReportCompletedSearchesNotDistributed()))
+                scheduleManager.LoadSchedule();
+                bool shouldBeActive = scheduleManager.IsWithinScheduledTime();
+
+                if (shouldBeActive && !isAppActive)
                 {
-                    MarkBusy();
-                    await ProcessRequest(pendingRequest, true);
-                    MarkAvailable();
+                    Console.WriteLine("[SCHEDULE] Active period started. Activating application...");
+                    await ActivateAsync(_conn);
+                    isAppActive = true;
                 }
-                while (!string.IsNullOrEmpty(pendingRequest = ReportUnCompletedSearches()))
+                else if (!shouldBeActive && isAppActive)
                 {
-                    MarkBusy();
-                    await ProcessRequest(pendingRequest, false);
-                    MarkAvailable();
+                    Console.WriteLine("[SCHEDULE] Active period ended. Inactivating application...");
+                    await InActivateAsync(_conn);
+                    isAppActive = false;
                 }
 
-                // Wait for new requests
-                while (true)
+                if (isAppActive)
                 {
-                    await _kick.WaitAsync(); // Wait for a signal that a new request has arrived
+                    Console.WriteLine("[SCHEDULE] Application is active. Checking for work...");
+                    // Process pending requests first
+                    string pendingRequest;
+                    while (!string.IsNullOrEmpty(pendingRequest = ReportCompletedSearchesNotDistributed()))
+                    {
+                        MarkBusy();
+                        await ProcessRequest(pendingRequest, true);
+                        MarkAvailable();
+                    }
+                    while (!string.IsNullOrEmpty(pendingRequest = ReportUnCompletedSearches()))
+                    {
+                        MarkBusy();
+                        await ProcessRequest(pendingRequest, false);
+                        MarkAvailable();
+                    }
+
+                    // Wait for new requests with a 20-minute timeout for idle refresh
+                    var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+                    try
+                    {
+                        await _kick.WaitAsync(cts.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        Console.WriteLine("[IDLE] No request received in 20 minutes. Refreshing browser...");
+                        await _page.ReloadAsync();
+                        continue; // Go back to the start of the loop to re-check schedule and for pending work
+                    }
 
                     var prevSearch = ReportCompletedSearchesNotDistributed();
                     if (!string.IsNullOrEmpty(prevSearch))
@@ -116,16 +145,23 @@ class Program
                         MarkBusy();
                         await ProcessRequest(prevSearch, true);
                         MarkAvailable();
-                        continue;
                     }
-
-                    var newRequest = ReportUnCompletedSearches();
-                    if (!string.IsNullOrEmpty(newRequest))
+                    else
                     {
-                        MarkBusy();
-                        await ProcessRequest(newRequest, false);
-                        MarkAvailable();
+                        var newRequest = ReportUnCompletedSearches();
+                        if (!string.IsNullOrEmpty(newRequest))
+                        {
+                            MarkBusy();
+                            await ProcessRequest(newRequest, false);
+                            MarkAvailable();
+                        }
                     }
+                }
+                else
+                {
+                    var timeToNextTransition = scheduleManager.GetTimeToNextTransition();
+                    Console.WriteLine($"[SCHEDULE] Application is inactive. Sleeping for {timeToNextTransition} until next schedule transition.");
+                    await Task.Delay(timeToNextTransition);
                 }
             }
             catch (Exception ex)
