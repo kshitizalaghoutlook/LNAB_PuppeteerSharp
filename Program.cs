@@ -227,25 +227,41 @@ class Program
 
     private static async Task CheckForApplicationErrorsAsync(IPage page)
     {
-        string pageContent = await page.EvaluateFunctionAsync<string>("() => document.body.innerText");
-        foreach (var term in errorTerms)
+        try
         {
-            if (pageContent.ToLower().Contains(term))
+            string pageContent = await page.EvaluateFunctionAsync<string>("() => document.body.innerText");
+            foreach (var term in errorTerms)
             {
-                throw new ApplicationException($"Error found: {term}");
+                if (pageContent.ToLower().Contains(term))
+                {
+                    throw new ApplicationException($"Error found: {term}");
+                }
             }
+        }
+        catch (PuppeteerSharp.EvaluationFailedException ex) when (ex.Message.Contains("Execution context was destroyed"))
+        {
+            // This is a common race condition during navigation. Log it as a warning and continue.
+            Console.WriteLine("[WARN] CheckForApplicationErrorsAsync: " + ex.Message);
         }
     }
 
     private static async Task CheckForApplicationErrorsAsync(IFrame frame)
     {
-        string pageContent = await frame.EvaluateFunctionAsync<string>("() => document.body.innerText");
-        foreach (var term in errorTerms)
+        try
         {
-            if (pageContent.ToLower().Contains(term))
+            string pageContent = await frame.EvaluateFunctionAsync<string>("() => document.body.innerText");
+            foreach (var term in errorTerms)
             {
-                throw new ApplicationException($"Error found: {term}");
+                if (pageContent.ToLower().Contains(term))
+                {
+                    throw new ApplicationException($"Error found: {term}");
+                }
             }
+        }
+        catch (PuppeteerSharp.EvaluationFailedException ex) when (ex.Message.Contains("Execution context was destroyed"))
+        {
+            // This is a common race condition during navigation. Log it as a warning and continue.
+            Console.WriteLine("[WARN] CheckForApplicationErrorsAsync: " + ex.Message);
         }
     }
 
