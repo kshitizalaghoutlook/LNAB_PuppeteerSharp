@@ -450,18 +450,30 @@ class Program
             // Click the checkbox
             await page.ClickAsync(selector);
 
-            // Define the id of the checkbox element
-            var resultsId = "ResultGeneral"; // Replace with the actual id of the checkbox
+            // Check for the "no results" message
+            var noResultsElement = await page.QuerySelectorAsync(".alert.alert-info");
+            string noResultsText = noResultsElement != null ? await noResultsElement.EvaluateFunctionAsync<string>("el => el.textContent") : string.Empty;
 
-            // Construct the CSS selector to find the checkbox by its id
-            selector = $"#{resultsId}";
+            bool noResultsFound = false;
+            if (noResultsText.Contains("Your search did not return any results"))
+            {
+                noOfLiens = 0;
+                noResultsFound = true;
+            }
+            else
+            {
+                // Define the id of the checkbox element
+                var resultsId = "ResultGeneral"; // Replace with the actual id of the checkbox
 
-            // Wait for the checkbox to be present and visible
-            await page.WaitForSelectorAsync(selector, new WaitForSelectorOptions { Visible = true });
+                // Construct the CSS selector to find the checkbox by its id
+                selector = $"#{resultsId}";
+
+                // Wait for the checkbox to be present and visible
+                await page.WaitForSelectorAsync(selector, new WaitForSelectorOptions { Visible = true });
 
 
-            // Extract the text inside the <strong> tag within the <span> with id 'ResultGeneral'
-            var strongText = await page.EvaluateFunctionAsync<string>(@"() => {
+                // Extract the text inside the <strong> tag within the <span> with id 'ResultGeneral'
+                var strongText = await page.EvaluateFunctionAsync<string>(@"() => {
             const span = document.querySelector('#ResultGeneral');
             if (span) {
                 const strongTag = span.querySelector('strong');
@@ -471,10 +483,10 @@ class Program
         }");
 
 
-            // Display the extracted text
-            if (strongText.Contains("Both") || strongText.Contains("Exact"))
-            {
-                strongText = await page.EvaluateFunctionAsync<string>(@"() => {
+                // Display the extracted text
+                if (strongText.Contains("Both") || strongText.Contains("Exact"))
+                {
+                    strongText = await page.EvaluateFunctionAsync<string>(@"() => {
             const span = document.querySelector('#ResultExact');
             if (span) {
                 const strongTag = span.querySelector('strong');
@@ -482,27 +494,33 @@ class Program
             }
             return null;
         }");
-                // Regular expression to match text between two circular brackets
-                string pattern = @"\(([^)]+)\)";
-                Match match = Regex.Match(strongText, pattern);
+                    // Regular expression to match text between two circular brackets
+                    string pattern = @"\(([^)]+)\)";
+                    Match match = Regex.Match(strongText, pattern);
 
-                if (match.Success)
-                {
-                    string result = match.Groups[1].Value;
-                    noOfLiens = Convert.ToInt32(result);
-                    Console.WriteLine($"Text inside brackets: {result}");
-                }
-                else
-                {
-                    Console.WriteLine("No text found inside brackets.");
-                }
+                    if (match.Success)
+                    {
+                        string result = match.Groups[1].Value;
+                        noOfLiens = Convert.ToInt32(result);
+                        Console.WriteLine($"Text inside brackets: {result}");
+                    }
+                    else
+                    {
+                        Console.WriteLine("No text found inside brackets.");
+                    }
 
-            }
-            else if (strongText.Contains("Inexact"))
-            {
-                noOfLiens = 0;
+                }
+                else if (strongText.Contains("Inexact"))
+                {
+                    noOfLiens = 0;
+                }
             }
             SQLSetCompleted(currentReqID, noOfLiens);
+
+            if (noResultsFound)
+            {
+                return;
+            }
 
             // Construct the CSS selector to find the input by its value attribute
             var buttonName = "Distribute";
@@ -746,8 +764,9 @@ class Program
 
             if (!_loggedIn)
             {
-                // TODO: Move these credentials to a secure storage like Azure Key Vault or Windows Credential Manager
-                await LoginAsync(_page, "UCDAON", "K1llB1ll", true);
+                string username = ConfigurationManager.AppSettings["Username"];
+                string password = ConfigurationManager.AppSettings["Password"];
+                await LoginAsync(_page, username, password, true);
                 _loggedIn = true;
             }
 
