@@ -60,6 +60,26 @@ public class ScheduleManager
                 });
             }
         }
+
+        // Apply Monday's schedule to all weekdays if it exists
+        var mondaySchedule = schedule.FirstOrDefault(s => s.DayOfWeek == DayOfWeek.Monday);
+        if (mondaySchedule != null)
+        {
+            // Remove any existing schedules for Tuesday through Friday
+            schedule.RemoveAll(s => s.DayOfWeek >= DayOfWeek.Tuesday && s.DayOfWeek <= DayOfWeek.Friday);
+
+            // Add Monday's schedule for Tuesday through Friday
+            for (int i = (int)DayOfWeek.Tuesday; i <= (int)DayOfWeek.Friday; i++)
+            {
+                schedule.Add(new TimeSlot
+                {
+                    DayOfWeek = (DayOfWeek)i,
+                    StartTime = mondaySchedule.StartTime,
+                    EndTime = mondaySchedule.EndTime
+                });
+            }
+        }
+
         return schedule;
     }
 
