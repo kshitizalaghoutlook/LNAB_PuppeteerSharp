@@ -13,6 +13,8 @@
     <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.0" />
     <PackageReference Include="PuppeteerSharp" Version="18.0.2" />
     <PackageReference Include="System.Configuration.ConfigurationManager" Version="8.0.0" />
+    <PackageReference Include="System.ServiceModel.NetTcp" Version="6.0.0" />
+    <PackageReference Include="System.ServiceModel.Primitives" Version="6.2.0" />
   </ItemGroup>
 
 </Project>

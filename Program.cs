@@ -54,11 +54,14 @@ class Program
 
     static async Task Main()
     {
-        _conn = ConfigurationManager.ConnectionStrings["_conn"].ConnectionString;
+        _conn = System.Configuration.ConfigurationManager.ConnectionStrings["_conn"].ConnectionString;
         // Fire on abnormal exits
         AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
         {
-            ErrorLogger.Log(e.ExceptionObject as Exception, "AppDomain.UnhandledException");
+            if (e.ExceptionObject is Exception ex)
+            {
+                ErrorLogger.Log(ex, "AppDomain.UnhandledException");
+            }
             try { InActivateAsync(_conn).GetAwaiter().GetResult(); } catch { /* swallow on shutdown */ }
         };
         AppDomain.CurrentDomain.ProcessExit += (_, __) =>
@@ -731,7 +734,6 @@ class Program
                 // Use querySelectorAll to get all rows in the table
                 var rows = await page.QuerySelectorAllAsync("table tr");
                 // Define the class name and the value you are looking for
-                string targetClassName = "bandlight";
                 string targetValue = vin;
                 // Iterate over each row and check the value in the 8th column
                 foreach (var row in rows)
@@ -783,34 +785,34 @@ class Program
     {
         await SafeExecutor.RunAsync(async () =>
         {
-            string email = ConfigurationManager.AppSettings["Email"];
+            string email = System.Configuration.ConfigurationManager.AppSettings["Email"];
             string vin = newRequest.Substring(newRequest.IndexOf("_") + 1);
             string currentReqID = newRequest.Substring(0, newRequest.IndexOf("_"));
 
             if (!_loggedIn)
             {
-                string username = ConfigurationManager.AppSettings["Username"];
-                string password = ConfigurationManager.AppSettings["Password"];
-                await LoginAsync(_page, username, password, true);
+                string username = System.Configuration.ConfigurationManager.AppSettings["Username"];
+                string password = System.Configuration.ConfigurationManager.AppSettings["Password"];
+                await LoginAsync(_page!, username, password, true);
                 _loggedIn = true;
             }
 
             if (prevSearch)
             {
-                bool isNewRequest = await PreviousSearches(_page, vin);
+                bool isNewRequest = await PreviousSearches(_page!, vin);
                 if (!isNewRequest)
                 {
-                    await DistributeSearch(_page, currentReqID, vin);
-                    await DistributeToEmail(_page, email, currentReqID);
+                    await DistributeSearch(_page!, currentReqID, vin);
+                    await DistributeToEmail(_page!, email, currentReqID);
                 }
             }
             else
             {
-                await RegistrySection(_page);
-                await Search(_page, vin);
-                await ContinueSearch(_page);
-                await DistributeSearch(_page, currentReqID, vin);
-                await DistributeToEmail(_page, email, currentReqID);
+                await RegistrySection(_page!);
+                await Search(_page!, vin);
+                await ContinueSearch(_page!);
+                await DistributeSearch(_page!, currentReqID, vin);
+                await DistributeToEmail(_page!, email, currentReqID);
             }
             await Task.Delay(15000);
         });
@@ -864,56 +866,22 @@ class Program
         await webHost.RunAsync();
     }
 
-    //private static async Task RestartAsync()
-    //{
-    //    Console.WriteLine("[RESTART] Closing browser and relaunching…");
-    //    try { if (_page is not null && !_page.IsClosed) await _page.CloseAsync(); } catch { }
-    //    try { if (_browser is not null) await _browser.CloseAsync(); } catch { }
-    //    try { if (!string.IsNullOrEmpty(_conn)) await InActivateAsync(_conn!); } catch { }
-
-    //    var exe = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
-    //    if (!string.IsNullOrEmpty(exe))
-    //        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = exe, UseShellExecute = true });
-
-    //    Environment.Exit(0);
-    //}
     private static async Task RestartAsync()
     {
         Console.WriteLine("[RESTART] Closing browser and relaunching…");
+        try { if (_page is not null && !_page.IsClosed) await _page.CloseAsync(); } catch { }
+        try { if (_browser is not null) await _browser.CloseAsync(); } catch { }
+        try { if (!string.IsNullOrEmpty(_conn)) await InActivateAsync(_conn!); } catch { }
 
-        // 1. Close Puppeteer objects safely
-        try
+        var exe = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
+        if (!string.IsNullOrEmpty(exe))
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = exe, UseShellExecute = true });
+
+        // Hide the current console window
+        IntPtr hWnd = GetConsoleWindow();
+        if (hWnd != IntPtr.Zero)
         {
-            if (_page is not null && !_page.IsClosed)
-                await _page.CloseAsync();
-        }
-        catch { }
-
-        try
-        {
-            if (_browser is not null && _browser.IsConnected)
-                await _browser.CloseAsync();
-        }
-        catch { }
-
-        try
-        {
-            if (!string.IsNullOrEmpty(_conn))
-                await InActivateAsync(_conn!);
-        }
-        catch { }
-
-        // 2. Start NEW instance BEFORE killing this one
-        var exePath = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
-
-        if (!string.IsNullOrEmpty(exePath))
-        {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = exePath,
-                UseShellExecute = true,
-                WindowStyle = System.Diagnostics.ProcessWindowStyle.Normal
-            });
+            ShowWindow(hWnd, SW_HIDE);
         }
 
         Environment.Exit(0);
@@ -1023,7 +991,7 @@ DELETE FROM dbo.RegisteredApps WHERE Host = @h AND Port = @p AND App = @a;", cn)
             connection.Open();
             command.ExecuteNonQuery();
         }
-        catch (Exception ex)
+        catch (Exception)
         {
 
         }
@@ -1046,7 +1014,7 @@ DELETE FROM dbo.RegisteredApps WHERE Host = @h AND Port = @p AND App = @a;", cn)
             connection.Open();
             command.ExecuteNonQuery();
         }
-        catch (Exception ex)
+        catch (Exception)
         {
 
         }
@@ -1077,7 +1045,7 @@ DELETE FROM dbo.RegisteredApps WHERE Host = @h AND Port = @p AND App = @a;", cn)
                 return $"{requestId}_{vin}";
             }
         }
-        catch (Exception ex)
+        catch (Exception)
         {
 
         }
@@ -1110,7 +1078,7 @@ DELETE FROM dbo.RegisteredApps WHERE Host = @h AND Port = @p AND App = @a;", cn)
                 return $"{requestId}_{vin}";
             }
         }
-        catch (Exception ex)
+        catch (Exception)
         {
 
         }
