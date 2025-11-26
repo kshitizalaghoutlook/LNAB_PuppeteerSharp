@@ -4,68 +4,44 @@ using System.Text;
 
 public static class ErrorLogger
 {
-    private static readonly string ErrorLogDirectory = "ErrorLogs";
+    private static readonly string LogDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ErrorLogs");
 
     static ErrorLogger()
     {
-        try
-        {
-            if (!Directory.Exists(ErrorLogDirectory))
-            {
-                Directory.CreateDirectory(ErrorLogDirectory);
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[FATAL-ERRORLOGGER-INIT] Could not create error log directory '{ErrorLogDirectory}'. Error: {ex.Message}");
-        }
+        Directory.CreateDirectory(LogDirectory);
     }
 
-    public static void Log(Exception ex, string context = "General Error")
+    public static void Log(Exception ex, string context = "General")
     {
         try
         {
-            var timestamp = DateTime.Now;
-            var filename = $"error_{timestamp:yyyyMMdd_HHmmss_fff}.txt";
-            var filePath = Path.Combine(ErrorLogDirectory, filename);
+            string timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss-fff");
+            string logFileName = $"{timestamp}_{context}.txt";
+            string logFilePath = Path.Combine(LogDirectory, logFileName);
 
             var sb = new StringBuilder();
-            sb.AppendLine($"# Error Report");
-            sb.AppendLine($"========================================");
-            sb.AppendLine($"Timestamp: {timestamp:yyyy-MM-dd HH:mm:ss.fff}");
+            sb.AppendLine($"Timestamp: {DateTime.Now}");
             sb.AppendLine($"Context: {context}");
-            sb.AppendLine($"========================================");
-            sb.AppendLine();
+            sb.AppendLine($"Exception Type: {ex.GetType().FullName}");
+            sb.AppendLine($"Message: {ex.Message}");
+            sb.AppendLine("Stack Trace:");
+            sb.AppendLine(ex.StackTrace);
 
-            var currentException = ex;
-            int level = 0;
-            while (currentException != null)
+            if (ex.InnerException != null)
             {
-                if (level > 0)
-                {
-                    sb.AppendLine();
-                    sb.AppendLine($"--- Inner Exception (Level {level}) ---");
-                }
-                sb.AppendLine($"Type: {currentException.GetType().FullName}");
-                sb.AppendLine($"Message: {currentException.Message}");
-                sb.AppendLine($"Source: {currentException.Source}");
+                sb.AppendLine("\n--- Inner Exception ---");
+                sb.AppendLine($"Exception Type: {ex.InnerException.GetType().FullName}");
+                sb.AppendLine($"Message: {ex.InnerException.Message}");
                 sb.AppendLine("Stack Trace:");
-                sb.AppendLine(currentException.StackTrace ?? "  Not available.");
-
-                currentException = currentException.InnerException;
-                level++;
+                sb.AppendLine(ex.InnerException.StackTrace);
             }
 
-            sb.AppendLine();
-            sb.AppendLine($"========================================");
-            sb.AppendLine($"# End of Report");
-
-            File.WriteAllText(filePath, sb.ToString());
+            File.WriteAllText(logFilePath, sb.ToString());
+            Console.WriteLine($"[ERROR] An error has been logged to: {logFilePath}");
         }
         catch (Exception logEx)
         {
-            Console.WriteLine($"[FATAL-ERRORLOGGER-WRITE] Failed to write error log file. Error: {logEx.Message}");
-            Console.WriteLine($"[ORIGINAL-ERROR] {ex}");
+            Console.WriteLine($"[FATAL] Failed to write to error log: {logEx.Message}");
         }
     }
 }

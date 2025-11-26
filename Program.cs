@@ -17,23 +17,30 @@ using System.ServiceModel;
 using System.Text.RegularExpressions;
 using System.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using System.Runtime.InteropServices;
 // using CoreWCF.Description; // only if you enable metadata behavior
 
 
 class Program
 {
+    // Win32 API calls to control console window visibility
+    [DllImport("kernel32.dll")]
+    static extern IntPtr GetConsoleWindow();
+
+    [DllImport("user32.dll")]
+    static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    const int SW_HIDE = 0;
+
     private static readonly int port = 2207;
     private static readonly string host = Environment.MachineName;
     private static readonly string app = "LNAB";
     private static IBrowser? _browser;
     private static IPage? _page;
     private static string? _conn;
-    private static bool _newRequest;
     private static bool _loggedIn;
-    private static string _vin;
-    private static string _currentReqID;
 
-    private static string[] errorTerms = { "timeout", "due to planned maintenance", "the appres system is temporarily unavailable", "asas id enrollment not found" };
+    private static readonly string[] errorTerms = { "timeout", "due to planned maintenance", "the appres system is temporarily unavailable", "asas id enrollment not found" };
     // Wakes the processing loop immediately when a remote request arrives
     private static readonly SemaphoreSlim _kick = new(0, int.MaxValue);
 
@@ -81,18 +88,11 @@ class Program
         _browser = await Puppeteer.LaunchAsync(new LaunchOptions
         {
             Headless = false,
-            Args = new[] { "--incognito" }   // whole browser runs in incognito
-                                             // ⚠️ No UserDataDir here – incognito should not use a persistent profile
+            UserDataDir = "./PuppeteerUserData"
         });
 
-        // Chrome usually opens one blank tab already – reuse it if present
-        var pages = await _browser.PagesAsync();
-        _page = pages.Length > 0 ? pages[0] : await _browser.NewPageAsync();
-
-        // Set UA on that incognito tab
-        await _page.SetUserAgentAsync(
-            "Mozilla/5.0 (Windows NT 10.0; Win32; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari"
-        );
+        _page = await _browser.NewPageAsync();
+        await _page.SetUserAgentAsync("Mozilla/5.0 (Windows NT 10.0; Win32; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari");
 
         // Main scheduling and processing loop
         while (true)
@@ -692,8 +692,9 @@ class Program
         return page;
     }
 
-    private static async Task<(IPage, bool, string)> PreviousSearches(IPage page, string vin)
+    private static async Task<bool> PreviousSearches(IPage page, string vin)
     {
+        bool newRequest = true;
         await SafeExecutor.RunAsync(async () =>
         {
             bool result = false;
@@ -751,7 +752,7 @@ class Program
                                 await button.ClickAsync();
                                 Console.WriteLine("Distribution Button clicked successfully.");
                                 result = true;
-                                _newRequest = false;
+                                newRequest = false;
                                 //break; // Exit the loop after clicking the button
                             }
                             return;
@@ -766,7 +767,7 @@ class Program
                 else
                 {
                     Console.WriteLine("No match found in previous searches.");
-                    _newRequest = true;
+                    newRequest = true;
                 }
             }
             else
@@ -775,7 +776,7 @@ class Program
             }
         });
 
-        return (page, _newRequest, vin);
+        return newRequest;
     }
 
     private static async Task ProcessRequest(string newRequest, bool prevSearch)
@@ -783,8 +784,8 @@ class Program
         await SafeExecutor.RunAsync(async () =>
         {
             string email = ConfigurationManager.AppSettings["Email"];
-            _vin = newRequest.Substring(newRequest.IndexOf("_") + 1);
-            _currentReqID = newRequest.Substring(0, newRequest.IndexOf("_"));
+            string vin = newRequest.Substring(newRequest.IndexOf("_") + 1);
+            string currentReqID = newRequest.Substring(0, newRequest.IndexOf("_"));
 
             if (!_loggedIn)
             {
@@ -796,23 +797,22 @@ class Program
 
             if (prevSearch)
             {
-                var result = await PreviousSearches(_page, _vin);
-                if (!result.Item2 && result.Item3.Equals(_vin))
+                bool isNewRequest = await PreviousSearches(_page, vin);
+                if (!isNewRequest)
                 {
-                    await DistributeSearch(_page, _currentReqID, _vin);
-                    await DistributeToEmail(_page, email, _currentReqID);
-                    await Task.Delay(15000);
+                    await DistributeSearch(_page, currentReqID, vin);
+                    await DistributeToEmail(_page, email, currentReqID);
                 }
             }
             else
             {
                 await RegistrySection(_page);
-                await Search(_page, _vin);
+                await Search(_page, vin);
                 await ContinueSearch(_page);
-                await DistributeSearch(_page, _currentReqID, _vin);
-                await DistributeToEmail(_page, email, _currentReqID);
-                await Task.Delay(15000);
+                await DistributeSearch(_page, currentReqID, vin);
+                await DistributeToEmail(_page, email, currentReqID);
             }
+            await Task.Delay(15000);
         });
     }
 
@@ -916,9 +916,7 @@ class Program
             });
         }
 
-        // 3. Kill current process immediately
-        //    Ensures no second console window stays open
-        System.Diagnostics.Process.GetCurrentProcess().Kill();
+        Environment.Exit(0);
     }
 
 
