@@ -864,18 +864,61 @@ class Program
         await webHost.RunAsync();
     }
 
+    //private static async Task RestartAsync()
+    //{
+    //    Console.WriteLine("[RESTART] Closing browser and relaunching…");
+    //    try { if (_page is not null && !_page.IsClosed) await _page.CloseAsync(); } catch { }
+    //    try { if (_browser is not null) await _browser.CloseAsync(); } catch { }
+    //    try { if (!string.IsNullOrEmpty(_conn)) await InActivateAsync(_conn!); } catch { }
+
+    //    var exe = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
+    //    if (!string.IsNullOrEmpty(exe))
+    //        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = exe, UseShellExecute = true });
+
+    //    Environment.Exit(0);
+    //}
     private static async Task RestartAsync()
     {
         Console.WriteLine("[RESTART] Closing browser and relaunching…");
-        try { if (_page is not null && !_page.IsClosed) await _page.CloseAsync(); } catch { }
-        try { if (_browser is not null) await _browser.CloseAsync(); } catch { }
-        try { if (!string.IsNullOrEmpty(_conn)) await InActivateAsync(_conn!); } catch { }
 
-        var exe = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
-        if (!string.IsNullOrEmpty(exe))
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = exe, UseShellExecute = true });
+        // 1. Close Puppeteer objects safely
+        try
+        {
+            if (_page is not null && !_page.IsClosed)
+                await _page.CloseAsync();
+        }
+        catch { }
 
-        Environment.Exit(0);
+        try
+        {
+            if (_browser is not null && _browser.IsConnected)
+                await _browser.CloseAsync();
+        }
+        catch { }
+
+        try
+        {
+            if (!string.IsNullOrEmpty(_conn))
+                await InActivateAsync(_conn!);
+        }
+        catch { }
+
+        // 2. Start NEW instance BEFORE killing this one
+        var exePath = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
+
+        if (!string.IsNullOrEmpty(exePath))
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = exePath,
+                UseShellExecute = true,
+                WindowStyle = System.Diagnostics.ProcessWindowStyle.Normal
+            });
+        }
+
+        // 3. Kill current process immediately
+        //    Ensures no second console window stays open
+        System.Diagnostics.Process.GetCurrentProcess().Kill();
     }
 
 
