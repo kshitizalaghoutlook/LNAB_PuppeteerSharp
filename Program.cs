@@ -135,13 +135,13 @@ class Program
                     while (!string.IsNullOrEmpty(pendingRequest = ReportCompletedSearchesNotDistributed()))
                     {
                         MarkBusy();
-                        await ProcessRequest(pendingRequest, true);
+                        await ProcessRequest(pendingRequest);
                         MarkAvailable();
                     }
                     while (!string.IsNullOrEmpty(pendingRequest = ReportUnCompletedSearches()))
                     {
                         MarkBusy();
-                        await ProcessRequest(pendingRequest, false);
+                        await ProcessRequest(pendingRequest);
                         MarkAvailable();
                     }
 
@@ -162,7 +162,7 @@ class Program
                     if (!string.IsNullOrEmpty(prevSearch))
                     {
                         MarkBusy();
-                        await ProcessRequest(prevSearch, true);
+                        await ProcessRequest(prevSearch);
                         MarkAvailable();
                     }
                     else
@@ -171,7 +171,7 @@ class Program
                         if (!string.IsNullOrEmpty(newRequest))
                         {
                             MarkBusy();
-                            await ProcessRequest(newRequest, false);
+                            await ProcessRequest(newRequest);
                             MarkAvailable();
                         }
                     }
@@ -790,7 +790,7 @@ class Program
         return newRequest;
     }
 
-    private static async Task ProcessRequest(string newRequest, bool prevSearch)
+    private static async Task ProcessRequest(string newRequest)
     {
         await SafeExecutor.RunAsync(async () =>
         {
@@ -806,23 +806,17 @@ class Program
                 _loggedIn = true;
             }
 
-            if (prevSearch)
-            {
-                bool isNewRequest = await PreviousSearches(_page!, vin);
-                if (!isNewRequest)
-                {
-                    await DistributeSearch(_page!, currentReqID, vin);
-                    await DistributeToEmail(_page!, email, currentReqID);
-                }
-            }
-            else
+            bool isNewRequest = await PreviousSearches(_page!, vin);
+
+            if (isNewRequest)
             {
                 await RegistrySection(_page!);
                 await Search(_page!, vin);
                 await ContinueSearch(_page!);
-                await DistributeSearch(_page!, currentReqID, vin);
-                await DistributeToEmail(_page!, email, currentReqID);
             }
+
+            await DistributeSearch(_page!, currentReqID, vin);
+            await DistributeToEmail(_page!, email, currentReqID);
             await Task.Delay(15000);
         });
     }
